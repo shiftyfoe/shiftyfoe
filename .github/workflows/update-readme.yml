@@ -1,0 +1,82 @@
+name: Update README
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # daily at midnight UTC
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Fetch GitHub Pages repos and update README
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import json, subprocess, re, sys
+
+          result = subprocess.run(
+              ["gh", "api", "user/repos", "--paginate",
+               "--jq", '[.[] | select(.has_pages == true and .archived == false and .fork == false) | {name: .name, description: .description, homepage: .homepage, html_url: .html_url}]'],
+              capture_output=True, text=True
+          )
+          if result.returncode != 0:
+              print(result.stderr, file=sys.stderr)
+              sys.exit(1)
+
+          # gh --paginate emits multiple JSON arrays; merge them
+          raw = result.stdout.strip()
+          arrays = re.findall(r'\[.*?\]', raw, re.DOTALL)
+          repos = []
+          for a in arrays:
+              repos.extend(json.loads(a))
+
+          repos.sort(key=lambda r: r['name'])
+
+          rows = ["| Project | Description | Live |",
+                  "|---------|-------------|------|"]
+          for r in repos:
+              name = r['name']
+              desc = r['description'] or ''
+              page = r['homepage'] or f"https://shiftyfoe.github.io/{name}/"
+              repo_url = r['html_url']
+              rows.append(f"| [{name}]({repo_url}) | {desc} | [↗]({page}) |")
+
+          table = "\n".join(rows)
+          block = f"<!-- PROJECTS:START -->\n{table}\n<!-- PROJECTS:END -->"
+
+          with open("README.md", "r") as f:
+              content = f.read()
+
+          updated = re.sub(
+              r"<!-- PROJECTS:START -->.*?<!-- PROJECTS:END -->",
+              block,
+              content,
+              flags=re.DOTALL
+          )
+
+          with open("README.md", "w") as f:
+              f.write(updated)
+
+          print("README updated.")
+          EOF
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet README.md || (
+            git add README.md &&
+            git commit -m "chore: update projects list"
+          )
+
+      - name: Push
+        run: git push
